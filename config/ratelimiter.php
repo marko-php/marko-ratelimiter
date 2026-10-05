@@ -5,6 +5,20 @@ declare(strict_types=1);
 return [
     /*
     |--------------------------------------------------------------------------
+    | Default Limits
+    |--------------------------------------------------------------------------
+    |
+    | Applied by RateLimitMiddleware to any route without a #[RateLimit]
+    | attribute, and to any limit a #[RateLimit] attribute leaves unset:
+    | at most default_max_attempts requests per default_decay_seconds
+    | window, per route and client.
+    |
+    */
+    'default_max_attempts' => 60,
+    'default_decay_seconds' => 60,
+
+    /*
+    |--------------------------------------------------------------------------
     | Trusted Proxies
     |--------------------------------------------------------------------------
     |

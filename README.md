@@ -1,10 +1,6 @@
 # marko/ratelimiter
 
-Rate limiting for Marko — throttle requests by key with configurable windows and cache-backed hit counts.
-
-## Overview
-
-`marko/ratelimiter` provides a simple, cache-backed rate limiter that integrates with Marko's routing layer via middleware. Define limits by key (IP, user ID, API token, etc.) with configurable max attempts and decay windows. The `RateLimiter` class is the core service; `RateLimitMiddleware` applies limits to routes automatically.
+Cache-backed rate limiter with route middleware --- per-route limits via `#[RateLimit]`, IPv6-safe keys and automatic `Retry-After` headers.
 
 ## Installation
 
@@ -12,42 +8,27 @@ Rate limiting for Marko — throttle requests by key with configurable windows a
 composer require marko/ratelimiter
 ```
 
-## Usage
-
-Apply the middleware to a route group:
+## Quick Example
 
 ```php
+use Marko\RateLimiter\Attributes\RateLimit;
 use Marko\RateLimiter\Middleware\RateLimitMiddleware;
+use Marko\Routing\Attributes\Middleware;
+use Marko\Routing\Attributes\Post;
+use Marko\Routing\Http\Response;
 
-$router->group(['middleware' => RateLimitMiddleware::class], function ($router): void {
-    $router->get('/api/search', SearchController::class);
-});
-```
-
-Use the service directly for custom logic:
-
-```php
-use Marko\RateLimiter\RateLimiter;
-
-$result = $rateLimiter->attempt(
-    key: 'api:' . $request->ip(),
-    maxAttempts: 60,
-    decaySeconds: 60,
-);
-
-if ($result->exceeded()) {
-    throw new TooManyRequestsException($result->retryAfter);
+class LoginController
+{
+    #[Post('/login')]
+    #[Middleware(RateLimitMiddleware::class)]
+    #[RateLimit(maxAttempts: 5, decaySeconds: 60, name: 'login')]
+    public function login(): Response
+    {
+        return new Response('OK');
+    }
 }
 ```
 
-## API Reference
-
-- `RateLimiter::attempt(string $key, int $maxAttempts, int $decaySeconds)` — Record a hit and return a `RateLimitResult`
-- `RateLimiter::clear(string $key)` — Reset the counter for a key
-- `RateLimitResult::exceeded()` — Whether the limit has been breached
-- `RateLimitResult::$remaining` — Remaining attempts
-- `RateLimitResult::$retryAfter` — Seconds until the window resets
-
 ## Documentation
 
-Full configuration and middleware usage: [marko/ratelimiter](https://marko.build/docs/packages/ratelimiter/)
+Full configuration, middleware usage and API reference: [marko/ratelimiter](https://marko.build/docs/packages/ratelimiter/)

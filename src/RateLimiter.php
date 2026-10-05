@@ -67,9 +67,13 @@ readonly class RateLimiter implements RateLimiterInterface
         $this->cache->delete($this->getCacheKey($key));
     }
 
+    /**
+     * Hash the caller's key so any string (an IPv6 address, an email, a route
+     * name) becomes a cache-safe key that every driver accepts.
+     */
     private function getCacheKey(
         string $key,
     ): string {
-        return "rate_limit.$key";
+        return 'rate_limit.' . hash('xxh128', $key);
     }
 }

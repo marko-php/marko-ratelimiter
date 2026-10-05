@@ -90,7 +90,7 @@ describe('RateLimiter', function (): void {
     it('stores cache key with TTL for decay window', function (): void {
         $this->limiter->attempt('test-key', 5, 120);
 
-        $item = $this->cache->getItem('rate_limit.test-key');
+        $item = $this->cache->getItem('rate_limit.' . hash('xxh128', 'test-key'));
 
         expect($item->isHit())->toBeTrue()
             ->and($item->expiresAt())->not->toBeNull();
@@ -106,7 +106,7 @@ describe('RateLimiter', function (): void {
         expect($tooMany)->toBeTrue();
 
         // Verify it did not increment by checking the cache value directly
-        $attempts = (int) $this->cache->get('rate_limit.test-key', 0);
+        $attempts = $this->cache->get('rate_limit.' . hash('xxh128', 'test-key'), 0);
 
         expect($attempts)->toBe(3);
     });
@@ -178,6 +178,31 @@ describe('RateLimiter', function (): void {
             ->and($result3->remaining())->toBe(2);
     });
 
+    it('limits an IPv6 key without throwing InvalidKeyException', function (): void {
+        $first = $this->limiter->attempt('2001:db8::1', 1, 60);
+        $second = $this->limiter->attempt('2001:db8::1', 1, 60);
+
+        expect($first->allowed())->toBeTrue()
+            ->and($second->allowed())->toBeFalse()
+            ->and($second->retryAfter())->toBeGreaterThan(0);
+    });
+
+    it('hashes the caller key into a cache-safe key', function (): void {
+        $this->limiter->attempt('login|user@example.com:{x}/y', 5, 60);
+
+        expect($this->cache->has('rate_limit.' . hash('xxh128', 'login|user@example.com:{x}/y')))->toBeTrue();
+    });
+
+    it('reports tooManyAttempts and clears for an IPv6 key', function (): void {
+        $this->limiter->attempt('2001:db8::1', 1, 60);
+
+        expect($this->limiter->tooManyAttempts('2001:db8::1', 1))->toBeTrue();
+
+        $this->limiter->clear('2001:db8::1');
+
+        expect($this->limiter->tooManyAttempts('2001:db8::1', 1))->toBeFalse();
+    });
+
     it('increments attempts atomically via the cache increment on attempt()', function (): void {
         $incrementCalled = false;
         $incrementKey = null;
@@ -208,6 +233,6 @@ describe('RateLimiter', function (): void {
         $limiter->attempt('test-key', 5, 60);
 
         expect($incrementCalled)->toBeTrue()
-            ->and($incrementKey)->toBe('rate_limit.test-key');
+            ->and($incrementKey)->toBe('rate_limit.' . hash('xxh128', 'test-key'));
     });
 });

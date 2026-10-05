@@ -1,0 +1,123 @@
+<?php
+
+declare(strict_types=1);
+
+use Marko\Cache\Config\CacheConfig;
+use Marko\Cache\Redis\Driver\RedisCacheDriver;
+use Marko\Cache\Redis\RedisConnection;
+use Marko\Cache\Redis\Signer\CacheValueSigner;
+use Marko\Encryption\Config\EncryptionConfig;
+use Marko\RateLimiter\RateLimiter;
+use Marko\Testing\Fake\FakeConfigRepository;
+use Predis\Client;
+
+/*
+ * Runs RateLimiter on marko/cache-redis against a real Redis server. Point it
+ * at one with MARKO_TEST_REDIS_HOST / MARKO_TEST_REDIS_PORT (default
+ * 127.0.0.1:6379); the tests skip with a clear reason when no server answers.
+ * CI provides one.
+ */
+
+function rateLimiterRedisHost(): string
+{
+    return getenv('MARKO_TEST_REDIS_HOST') ?: '127.0.0.1';
+}
+
+function rateLimiterRedisPort(): int
+{
+    return (int) (getenv('MARKO_TEST_REDIS_PORT') ?: 6379);
+}
+
+function rateLimiterRedisSkipReason(): string
+{
+    return sprintf(
+        'Redis is not reachable at %s:%d. Start one (e.g. `docker run -p 6379:6379 redis:7-alpine`) or set MARKO_TEST_REDIS_HOST / MARKO_TEST_REDIS_PORT.',
+        rateLimiterRedisHost(),
+        rateLimiterRedisPort(),
+    );
+}
+
+function rateLimiterRedisUnavailable(): bool
+{
+    static $unavailable = null;
+
+    if ($unavailable === null) {
+        try {
+            new Client([
+                'host' => rateLimiterRedisHost(),
+                'port' => rateLimiterRedisPort(),
+                'timeout' => 0.5,
+            ])->ping();
+            $unavailable = false;
+        } catch (Throwable) {
+            $unavailable = true;
+        }
+    }
+
+    return $unavailable;
+}
+
+function createRateLimiterRedisCache(): RedisCacheDriver
+{
+    return new RedisCacheDriver(
+        new RedisConnection(
+            host: rateLimiterRedisHost(),
+            port: rateLimiterRedisPort(),
+            database: 15,
+            prefix: 'marko:test:' . bin2hex(random_bytes(6)) . ':',
+        ),
+        new CacheConfig(new FakeConfigRepository([
+            'cache.path' => '/tmp/cache',
+            'cache.default_ttl' => 3600,
+            'cache.driver' => 'redis',
+        ])),
+        new CacheValueSigner(new EncryptionConfig(new FakeConfigRepository([
+            'encryption.key' => 'integration-signing-key',
+        ]))),
+    );
+}
+
+describe('RateLimiter on a real Redis server', function (): void {
+    beforeEach(function (): void {
+        if (rateLimiterRedisUnavailable()) {
+            return;
+        }
+
+        $this->cache = createRateLimiterRedisCache();
+        $this->limiter = new RateLimiter($this->cache);
+    });
+
+    afterEach(function (): void {
+        if (isset($this->cache)) {
+            $this->cache->clear();
+        }
+    });
+
+    it('denies the third attempt with a positive retryAfter against redis', function (): void {
+        $first = $this->limiter->attempt('203.0.113.50', 2, 60);
+        $second = $this->limiter->attempt('203.0.113.50', 2, 60);
+        $third = $this->limiter->attempt('203.0.113.50', 2, 60);
+
+        expect($first->allowed())->toBeTrue()
+            ->and($second->allowed())->toBeTrue()
+            ->and($third->allowed())->toBeFalse()
+            ->and($third->retryAfter())->toBeGreaterThan(0)
+            ->toBeLessThanOrEqual(60);
+    })->skip(fn (): bool => rateLimiterRedisUnavailable(), rateLimiterRedisSkipReason());
+
+    it('reports tooManyAttempts from a redis counter', function (): void {
+        $this->limiter->attempt('203.0.113.50', 2, 60);
+        $this->limiter->attempt('203.0.113.50', 2, 60);
+
+        expect($this->limiter->tooManyAttempts('203.0.113.50', 2))->toBeTrue()
+            ->and($this->limiter->tooManyAttempts('203.0.113.51', 2))->toBeFalse();
+    })->skip(fn (): bool => rateLimiterRedisUnavailable(), rateLimiterRedisSkipReason());
+
+    it('limits an IPv6 client against redis', function (): void {
+        $this->limiter->attempt('2001:db8::1', 1, 60);
+        $denied = $this->limiter->attempt('2001:db8::1', 1, 60);
+
+        expect($denied->allowed())->toBeFalse()
+            ->and($denied->retryAfter())->toBeGreaterThan(0);
+    })->skip(fn (): bool => rateLimiterRedisUnavailable(), rateLimiterRedisSkipReason());
+});
