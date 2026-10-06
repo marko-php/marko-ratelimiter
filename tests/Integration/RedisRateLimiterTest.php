@@ -7,6 +7,7 @@ use Marko\Cache\Redis\Driver\RedisCacheDriver;
 use Marko\Cache\Redis\RedisConnection;
 use Marko\Cache\Redis\Signer\CacheValueSigner;
 use Marko\Clock\SystemClock;
+use Marko\Core\Support\ErrorCapture;
 use Marko\Encryption\Config\EncryptionConfig;
 use Marko\RateLimiter\RateLimiter;
 use Marko\Testing\Fake\FakeConfigRepository;
@@ -33,30 +34,43 @@ function rateLimiterRedisPort(): int
 function rateLimiterRedisSkipReason(): string
 {
     return sprintf(
-        'Redis is not reachable at %s:%d. Start one (e.g. `docker run -p 6379:6379 redis:7-alpine`) or set MARKO_TEST_REDIS_HOST / MARKO_TEST_REDIS_PORT.',
+        'Redis is not reachable at %s:%d: %s. Start one (e.g. `docker run -p 6379:6379 redis:7-alpine`) or set MARKO_TEST_REDIS_HOST / MARKO_TEST_REDIS_PORT.',
         rateLimiterRedisHost(),
         rateLimiterRedisPort(),
+        rateLimiterRedisUnreachableReason() ?? 'no reason given',
     );
+}
+
+/**
+ * Pings Redis once and returns why it is unreachable, or null when it answers.
+ * Predis suppresses its own connect warning with @, which PHPUnit still records,
+ * so the ping runs inside ErrorCapture to keep the skip probe warning-free.
+ */
+function rateLimiterRedisUnreachableReason(): ?string
+{
+    static $probed = false;
+    static $reason = null;
+
+    if (!$probed) {
+        $probed = true;
+
+        try {
+            ErrorCapture::run($warning, fn (): mixed => new Client([
+                'host' => rateLimiterRedisHost(),
+                'port' => rateLimiterRedisPort(),
+                'timeout' => 0.5,
+            ])->ping());
+        } catch (Throwable $e) {
+            $reason = $e->getMessage();
+        }
+    }
+
+    return $reason;
 }
 
 function rateLimiterRedisUnavailable(): bool
 {
-    static $unavailable = null;
-
-    if ($unavailable === null) {
-        try {
-            new Client([
-                'host' => rateLimiterRedisHost(),
-                'port' => rateLimiterRedisPort(),
-                'timeout' => 0.5,
-            ])->ping();
-            $unavailable = false;
-        } catch (Throwable) {
-            $unavailable = true;
-        }
-    }
-
-    return $unavailable;
+    return rateLimiterRedisUnreachableReason() !== null;
 }
 
 function createRateLimiterRedisCache(
