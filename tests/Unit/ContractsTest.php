@@ -21,3 +21,11 @@ describe('RateLimiterInterface', function (): void {
         expect($reflection->implementsInterface(RateLimiterInterface::class))->toBeTrue();
     });
 });
+
+describe('package dependencies', function (): void {
+    it('requires marko/clock', function (): void {
+        $composer = json_decode(file_get_contents(dirname(__DIR__, 2) . '/composer.json'), true);
+
+        expect($composer['require'])->toHaveKey('marko/clock');
+    });
+});

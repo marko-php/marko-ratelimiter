@@ -22,6 +22,7 @@ use Marko\RateLimiter\Tests\TaggedResponse;
 use Marko\Routing\Http\Request;
 use Marko\Routing\Http\Response;
 use Marko\Routing\Middleware\MiddlewareInterface;
+use Marko\Testing\Fake\FakeClock;
 use Marko\Testing\Fake\FakeConfigRepository;
 
 /**
@@ -89,11 +90,13 @@ function createRateLimitMiddleware(
 
 function createRealRateLimiter(): RateLimiter
 {
+    $clock = new FakeClock();
+
     return new RateLimiter(new ArrayCacheDriver(new CacheConfig(new FakeConfigRepository([
         'cache.path' => '/tmp/cache',
         'cache.default_ttl' => 3600,
         'cache.driver' => 'array',
-    ]))));
+    ])), $clock), $clock);
 }
 
 function createRoutedRequest(

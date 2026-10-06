@@ -7,11 +7,13 @@ namespace Marko\RateLimiter;
 use Marko\Cache\Contracts\CacheInterface;
 use Marko\Cache\Exceptions\InvalidKeyException;
 use Marko\RateLimiter\Contracts\RateLimiterInterface;
+use Psr\Clock\ClockInterface;
 
 readonly class RateLimiter implements RateLimiterInterface
 {
     public function __construct(
         private CacheInterface $cache,
+        private ClockInterface $clock,
     ) {}
 
     /**
@@ -30,7 +32,7 @@ readonly class RateLimiter implements RateLimiterInterface
             $retryAfter = null;
 
             if ($item->isHit() && $item->expiresAt() !== null) {
-                $retryAfter = max(0, $item->expiresAt()->getTimestamp() - time());
+                $retryAfter = max(0, $item->expiresAt()->getTimestamp() - $this->clock->now()->getTimestamp());
             }
 
             return new RateLimitResult(

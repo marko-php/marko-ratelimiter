@@ -6,10 +6,12 @@ use Marko\Cache\Config\CacheConfig;
 use Marko\Cache\Redis\Driver\RedisCacheDriver;
 use Marko\Cache\Redis\RedisConnection;
 use Marko\Cache\Redis\Signer\CacheValueSigner;
+use Marko\Clock\SystemClock;
 use Marko\Encryption\Config\EncryptionConfig;
 use Marko\RateLimiter\RateLimiter;
 use Marko\Testing\Fake\FakeConfigRepository;
 use Predis\Client;
+use Psr\Clock\ClockInterface;
 
 /*
  * Runs RateLimiter on marko/cache-redis against a real Redis server. Point it
@@ -57,8 +59,9 @@ function rateLimiterRedisUnavailable(): bool
     return $unavailable;
 }
 
-function createRateLimiterRedisCache(): RedisCacheDriver
-{
+function createRateLimiterRedisCache(
+    ClockInterface $clock,
+): RedisCacheDriver {
     return new RedisCacheDriver(
         new RedisConnection(
             host: rateLimiterRedisHost(),
@@ -74,6 +77,7 @@ function createRateLimiterRedisCache(): RedisCacheDriver
         new CacheValueSigner(new EncryptionConfig(new FakeConfigRepository([
             'encryption.key' => 'integration-signing-key',
         ]))),
+        $clock,
     );
 }
 
@@ -83,8 +87,9 @@ describe('RateLimiter on a real Redis server', function (): void {
             return;
         }
 
-        $this->cache = createRateLimiterRedisCache();
-        $this->limiter = new RateLimiter($this->cache);
+        $clock = new SystemClock();
+        $this->cache = createRateLimiterRedisCache($clock);
+        $this->limiter = new RateLimiter($this->cache, $clock);
     });
 
     afterEach(function (): void {

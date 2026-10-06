@@ -8,7 +8,9 @@ use Marko\Cache\Memory\Driver\ArrayCacheDriver;
 use Marko\RateLimiter\Contracts\RateLimiterInterface;
 use Marko\RateLimiter\RateLimiter;
 use Marko\RateLimiter\RateLimitResult;
+use Marko\Testing\Fake\FakeClock;
 use Marko\Testing\Fake\FakeConfigRepository;
+use Psr\Clock\ClockInterface;
 
 function createRateLimitCacheConfig(
     int $defaultTtl = 3600,
@@ -22,15 +24,17 @@ function createRateLimitCacheConfig(
     return new CacheConfig($config);
 }
 
-function createRateLimitTestCache(): CacheInterface
-{
-    return new ArrayCacheDriver(createRateLimitCacheConfig());
+function createRateLimitTestCache(
+    ClockInterface $clock,
+): CacheInterface {
+    return new ArrayCacheDriver(createRateLimitCacheConfig(), $clock);
 }
 
 describe('RateLimiter', function (): void {
     beforeEach(function (): void {
-        $this->cache = createRateLimitTestCache();
-        $this->limiter = new RateLimiter($this->cache);
+        $this->clock = new FakeClock('2026-01-01 12:00:00 UTC');
+        $this->cache = createRateLimitTestCache($this->clock);
+        $this->limiter = new RateLimiter($this->cache, $this->clock);
     });
 
     it('implements RateLimiterInterface', function (): void {
@@ -207,15 +211,16 @@ describe('RateLimiter', function (): void {
         $incrementCalled = false;
         $incrementKey = null;
 
-        $cache = new class ($incrementCalled, $incrementKey) extends ArrayCacheDriver
+        $cache = new class ($incrementCalled, $incrementKey, $this->clock) extends ArrayCacheDriver
         {
             public function __construct(
                 /** @noinspection PhpPropertyOnlyWrittenInspection - Reference property modifies external variable */
                 private bool &$incrementCalled,
                 /** @noinspection PhpPropertyOnlyWrittenInspection - Reference property modifies external variable */
                 private ?string &$incrementKey,
+                ClockInterface $clock,
             ) {
-                parent::__construct(createRateLimitCacheConfig());
+                parent::__construct(createRateLimitCacheConfig(), $clock);
             }
 
             public function increment(
@@ -229,10 +234,50 @@ describe('RateLimiter', function (): void {
             }
         };
 
-        $limiter = new RateLimiter($cache);
+        $limiter = new RateLimiter($cache, $this->clock);
         $limiter->attempt('test-key', 5, 60);
 
         expect($incrementCalled)->toBeTrue()
             ->and($incrementKey)->toBe('rate_limit.' . hash('xxh128', 'test-key'));
+    });
+    it('computes retry after from the clock', function (): void {
+        $this->limiter->attempt('clock-key', 1, 60);
+
+        $this->clock->travel('+20 seconds');
+
+        expect($this->limiter->attempt('clock-key', 1, 60)->retryAfter())->toBe(40);
+    });
+
+    it('counts retry after down as the clock advances', function (): void {
+        $this->limiter->attempt('clock-key', 1, 60);
+        $this->clock->travel('+1 second');
+        $first = $this->limiter->attempt('clock-key', 1, 60)->retryAfter();
+
+        $this->clock->travel('+58 seconds');
+        $second = $this->limiter->attempt('clock-key', 1, 60)->retryAfter();
+
+        expect($first)->toBe(59)
+            ->and($second)->toBe(1);
+    });
+
+    it('reports zero retry after on the last second of the window', function (): void {
+        $this->limiter->attempt('clock-key', 1, 60);
+
+        $this->clock->travel('+60 seconds');
+
+        $result = $this->limiter->attempt('clock-key', 1, 60);
+
+        expect($result->allowed())->toBeFalse()
+            ->and($result->retryAfter())->toBe(0);
+    });
+
+    it('allows attempts again once the clock passes the decay window', function (): void {
+        $this->limiter->attempt('clock-key', 1, 60);
+        expect($this->limiter->attempt('clock-key', 1, 60)->allowed())->toBeFalse();
+
+        $this->clock->travel('+61 seconds');
+
+        expect($this->limiter->attempt('clock-key', 1, 60)->allowed())->toBeTrue()
+            ->and($this->limiter->tooManyAttempts('clock-key', 2))->toBeFalse();
     });
 });
