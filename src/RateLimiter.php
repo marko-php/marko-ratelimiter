@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Marko\RateLimiter;
 
 use Marko\Cache\Contracts\CacheInterface;
+use Marko\Cache\Exceptions\CacheException;
 use Marko\Cache\Exceptions\InvalidKeyException;
 use Marko\RateLimiter\Contracts\RateLimiterInterface;
 use Psr\Clock\ClockInterface;
@@ -17,7 +18,10 @@ readonly class RateLimiter implements RateLimiterInterface
     ) {}
 
     /**
-     * @throws InvalidKeyException
+     * A cache failure propagates as a CacheException: the limiter fails closed
+     * rather than allowing a request it could not count.
+     *
+     * @throws InvalidKeyException|CacheException
      */
     public function attempt(
         string $key,

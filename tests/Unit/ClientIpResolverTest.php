@@ -83,6 +83,77 @@ describe('ClientIpResolver', function (): void {
         expect($resolver->resolve($request))->toBe('2001:db8::1');
     });
 
+    it('trusts a REMOTE_ADDR inside an IPv4 CIDR range in trusted_proxies', function (): void {
+        $resolver = createResolver(['10.0.0.0/8']);
+        $request = new Request(server: [
+            'REMOTE_ADDR' => '10.20.30.40',
+            'HTTP_X_FORWARDED_FOR' => '203.0.113.50',
+        ]);
+
+        expect($resolver->resolve($request))->toBe('203.0.113.50');
+    });
+
+    it('does not trust a REMOTE_ADDR outside an IPv4 CIDR range', function (): void {
+        $resolver = createResolver(['10.0.0.0/8', '192.168.1.0/25']);
+
+        expect($resolver->resolve(new Request(server: [
+            'REMOTE_ADDR' => '11.0.0.1',
+            'HTTP_X_FORWARDED_FOR' => '9.9.9.9',
+        ])))->toBe('11.0.0.1')
+            ->and($resolver->resolve(new Request(server: [
+                'REMOTE_ADDR' => '192.168.1.128',
+                'HTTP_X_FORWARDED_FOR' => '9.9.9.9',
+            ])))->toBe('192.168.1.128')
+            ->and($resolver->resolve(new Request(server: [
+                'REMOTE_ADDR' => '192.168.1.127',
+                'HTTP_X_FORWARDED_FOR' => '9.9.9.9',
+            ])))->toBe('9.9.9.9');
+    });
+
+    it('trusts a REMOTE_ADDR inside an IPv6 CIDR range in trusted_proxies', function (): void {
+        $resolver = createResolver(['2001:db8:ffff::/48']);
+
+        expect($resolver->resolve(new Request(server: [
+            'REMOTE_ADDR' => '2001:db8:ffff:1::5',
+            'HTTP_X_FORWARDED_FOR' => '203.0.113.50',
+        ])))->toBe('203.0.113.50')
+            ->and($resolver->resolve(new Request(server: [
+                'REMOTE_ADDR' => '2001:db8:fffe::5',
+                'HTTP_X_FORWARDED_FOR' => '203.0.113.50',
+            ])))->toBe('2001:db8:fffe::5');
+    });
+
+    it('skips CIDR-trusted hops when walking the X-Forwarded-For chain', function (): void {
+        $resolver = createResolver(['10.0.0.0/8', 'fd00::/8']);
+        $request = new Request(server: [
+            'REMOTE_ADDR' => '10.0.0.1',
+            'HTTP_X_FORWARDED_FOR' => '203.0.113.50, fd12::7, 10.9.9.9',
+        ]);
+
+        expect($resolver->resolve($request))->toBe('203.0.113.50');
+    });
+
+    it('matches an IPv4-mapped IPv6 REMOTE_ADDR against an IPv4 CIDR range', function (): void {
+        $resolver = createResolver(['10.0.0.0/8']);
+        $request = new Request(server: [
+            'REMOTE_ADDR' => '::ffff:10.1.2.3',
+            'HTTP_X_FORWARDED_FOR' => '203.0.113.50',
+        ]);
+
+        expect($resolver->resolve($request))->toBe('203.0.113.50');
+    });
+
+    it(
+        'throws on an invalid trusted_proxies entry instead of silently never matching',
+        function (string $entry): void {
+            $resolver = createResolver(['10.0.0.1', $entry]);
+            $request = new Request(server: ['REMOTE_ADDR' => '10.0.0.1']);
+
+            expect(fn () => $resolver->resolve($request))
+                ->toThrow(ClientIpException::class, "Invalid ratelimiter.trusted_proxies entry: $entry");
+        },
+    )->with(['not-an-ip', '10.0.0.0/33', '2001:db8::/129', '10.0.0.0/', '10.0.0.0/abc', '300.0.0.0/8']);
+
     it('fails closed (no shared global key) when REMOTE_ADDR is absent', function (): void {
         $resolver = createResolver([]);
         $request = new Request();

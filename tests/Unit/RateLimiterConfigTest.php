@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Marko\Config\Exceptions\ConfigNotFoundException;
 use Marko\RateLimiter\Config\RateLimiterConfig;
+use Marko\RateLimiter\Exceptions\ClientIpException;
 use Marko\Testing\Fake\FakeConfigRepository;
 
 describe('RateLimiterConfig', function (): void {
@@ -29,6 +30,24 @@ describe('RateLimiterConfig', function (): void {
 
         expect($config['default_max_attempts'])->toBe(60)
             ->and($config['default_decay_seconds'])->toBe(60)
-            ->and($config['trusted_proxies'])->toBe([]);
+            ->and($config['trusted_proxies'])->toBe([])
+            ->and($config['ipv6_prefix'])->toBe(64);
     });
+
+    it('reads the ipv6 prefix from config', function (): void {
+        $config = new RateLimiterConfig(new FakeConfigRepository([
+            'ratelimiter.ipv6_prefix' => 56,
+        ]));
+
+        expect($config->ipv6Prefix())->toBe(56);
+    });
+
+    it('throws when the ipv6 prefix is outside 1-128', function (int $prefix): void {
+        $config = new RateLimiterConfig(new FakeConfigRepository([
+            'ratelimiter.ipv6_prefix' => $prefix,
+        ]));
+
+        expect(fn (): int => $config->ipv6Prefix())
+            ->toThrow(ClientIpException::class, "ratelimiter.ipv6_prefix must be between 1 and 128, got $prefix");
+    })->with([0, -1, 129]);
 });

@@ -62,9 +62,12 @@ class RecordingRateLimiter implements RateLimiterInterface
 function createMiddlewareKeyResolver(
     array $trustedProxies = [],
 ): RateLimitKeyResolverInterface {
-    return new ClientIpKeyResolver(new ClientIpResolver(new FakeConfigRepository([
+    $config = new FakeConfigRepository([
         'ratelimiter.trusted_proxies' => $trustedProxies,
-    ])));
+        'ratelimiter.ipv6_prefix' => 64,
+    ]);
+
+    return new ClientIpKeyResolver(new ClientIpResolver($config), new RateLimiterConfig($config));
 }
 
 function createMiddlewareConfig(

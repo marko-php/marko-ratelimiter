@@ -7,6 +7,7 @@ namespace Marko\RateLimiter;
 use Marko\Config\ConfigRepositoryInterface;
 use Marko\Config\Exceptions\ConfigNotFoundException;
 use Marko\RateLimiter\Exceptions\ClientIpException;
+use Marko\RateLimiter\Support\IpAddress;
 use Marko\Routing\Http\Request;
 
 readonly class ClientIpResolver
@@ -18,9 +19,10 @@ readonly class ClientIpResolver
     /**
      * Resolve the real client IP from the request.
      *
-     * When REMOTE_ADDR is in the trusted_proxies list, the right-most untrusted
-     * hop from the X-Forwarded-For chain is used. Otherwise, REMOTE_ADDR is used
-     * directly and X-Forwarded-For is ignored (preventing header forgery).
+     * When REMOTE_ADDR is in the trusted_proxies list (an exact address or a
+     * CIDR range), the right-most untrusted hop from the X-Forwarded-For chain
+     * is used. Otherwise, REMOTE_ADDR is used directly and X-Forwarded-For is
+     * ignored (preventing header forgery).
      *
      * @throws ClientIpException|ConfigNotFoundException
      */
@@ -32,7 +34,9 @@ readonly class ClientIpResolver
             throw ClientIpException::missingRemoteAddr();
         }
 
-        $trustedProxies = $this->configRepository->getArray('ratelimiter.trusted_proxies');
+        $trustedProxies = $this->parseTrustedProxies(
+            $this->configRepository->getArray('ratelimiter.trusted_proxies'),
+        );
 
         if ($this->isTrustedProxy($remoteAddr, $trustedProxies)) {
             $xff = $request->header('X-Forwarded-For');
@@ -50,22 +54,88 @@ readonly class ClientIpResolver
     }
 
     /**
-     * @param array<string> $trustedProxies
+     * Parse every trusted_proxies entry up front, so a typo fails loudly on the
+     * first request instead of silently never matching.
+     *
+     * @param array<mixed> $entries
+     *
+     * @return list<array{network: string, prefixLength: int}>
+     *
+     * @throws ClientIpException
+     */
+    private function parseTrustedProxies(
+        array $entries,
+    ): array {
+        $ranges = [];
+
+        foreach ($entries as $entry) {
+            if (!is_string($entry)) {
+                throw ClientIpException::invalidTrustedProxy(get_debug_type($entry));
+            }
+
+            $address = $entry;
+            $prefixLength = null;
+
+            if (str_contains($entry, '/')) {
+                [$address, $prefix] = explode('/', $entry, 2);
+
+                if (!ctype_digit($prefix)) {
+                    throw ClientIpException::invalidTrustedProxy($entry);
+                }
+
+                $prefixLength = (int) $prefix;
+            }
+
+            $network = IpAddress::pack(trim($address));
+
+            if ($network === null) {
+                throw ClientIpException::invalidTrustedProxy($entry);
+            }
+
+            $maxPrefixLength = strlen($network) * 8;
+
+            // An IPv4-mapped network (::ffff:10.0.0.0/104) packs as IPv4, so its
+            // prefix length shifts down by the 96 bits of the mapping prefix.
+            if ($prefixLength !== null && $maxPrefixLength === 32 && str_contains($address, ':')) {
+                $prefixLength -= 96;
+            }
+
+            $prefixLength ??= $maxPrefixLength;
+
+            if ($prefixLength < 0 || $prefixLength > $maxPrefixLength) {
+                throw ClientIpException::invalidTrustedProxy($entry);
+            }
+
+            $ranges[] = ['network' => $network, 'prefixLength' => $prefixLength];
+        }
+
+        return $ranges;
+    }
+
+    /**
+     * @param list<array{network: string, prefixLength: int}> $trustedProxies
      */
     private function isTrustedProxy(
         string $ip,
         array $trustedProxies,
     ): bool {
-        $normalized = $this->normalizeIp($ip);
+        $packed = IpAddress::pack($ip);
 
-        return array_any($trustedProxies, fn (string $proxy) => $this->normalizeIp($proxy) === $normalized);
+        if ($packed === null) {
+            return false;
+        }
+
+        return array_any(
+            $trustedProxies,
+            fn (array $range): bool => IpAddress::inRange($packed, $range['network'], $range['prefixLength']),
+        );
     }
 
     /**
      * Walk the XFF chain from right to left, skipping trusted proxies,
      * and return the right-most untrusted IP.
      *
-     * @param  array<string> $trustedProxies
+     * @param list<array{network: string, prefixLength: int}> $trustedProxies
      */
     private function resolveFromXff(
         string $xff,
@@ -84,21 +154,5 @@ readonly class ClientIpResolver
         }
 
         return null;
-    }
-
-    private function normalizeIp(string $ip): string
-    {
-        // For IPv6, normalize to lowercase compact form
-        if (str_contains($ip, ':')) {
-            $packed = inet_pton($ip);
-
-            if ($packed === false) {
-                return $ip;
-            }
-
-            return inet_ntop($packed) ?: $ip;
-        }
-
-        return $ip;
     }
 }

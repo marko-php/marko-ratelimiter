@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 use Marko\Cache\Config\CacheConfig;
 use Marko\Cache\Contracts\CacheInterface;
+use Marko\Cache\Exceptions\CacheException;
 use Marko\Cache\Memory\Driver\ArrayCacheDriver;
 use Marko\RateLimiter\Contracts\RateLimiterInterface;
 use Marko\RateLimiter\RateLimiter;
@@ -240,6 +241,16 @@ describe('RateLimiter', function (): void {
         expect($incrementCalled)->toBeTrue()
             ->and($incrementKey)->toBe('rate_limit.' . hash('xxh128', 'test-key'));
     });
+    it('propagates a cache increment failure instead of allowing the attempt', function (): void {
+        $cache = $this->createStub(CacheInterface::class);
+        $cache->method('increment')
+            ->willThrowException(new CacheException('Cache entry could not be opened'));
+        $limiter = new RateLimiter($cache, $this->clock);
+
+        expect(fn (): RateLimitResult => $limiter->attempt('test-key', 5, 60))
+            ->toThrow(CacheException::class, 'Cache entry could not be opened');
+    });
+
     it('computes retry after from the clock', function (): void {
         $this->limiter->attempt('clock-key', 1, 60);
 
